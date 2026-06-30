@@ -1,0 +1,34 @@
+# Smart City Garbage Detection - Python dependencies
+# Pinned to recent, compatible versions (2026). Python 3.10+.
+
+# --- API layer ---
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+pydantic>=2.7,<3
+pydantic-settings>=2.3,<3
+python-multipart==0.0.9
+
+# --- Persistence ---
+SQLAlchemy>=2.0,<3
+
+# --- ML / detection ---
+ultralytics>=8.4.0
+pillow==10.4.0
+numpy>=1.26,<2
+
+# --- LLM layer / HTTP clients (Ollama is a separate binary, not a pip package) ---
+requests==2.32.3
+httpx==0.27.0
+
+# --- Dashboard ---
+streamlit==1.36.0
+streamlit-folium==0.21.1
+folium==0.17.0
+pandas==2.2.2
+plotly==5.22.0
+
+# --- Config / utils ---
+pyyaml==6.0.1
+
+# --- Testing ---
+pytest==8.2.2

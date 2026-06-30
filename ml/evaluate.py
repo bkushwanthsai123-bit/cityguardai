@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""Evaluate a trained YOLOv8 garbage-detection model on the test split.
+
+Runs ``ultralytics`` validation on the test split, computes a metrics table
+(mAP@0.5, mAP@0.5:0.95, precision, recall, F1, per-class AP), measures mean
+CPU inference latency over the test images, saves the table to
+``docs/metrics.md``, and copies the ultralytics plots (confusion matrix,
+PR/F1 curves) into ``docs/``.
+
+Usage::
+
+    python ml/evaluate.py --weights ml/weights/best.pt --data ml/dataset.yaml
+
+Requires: ultralytics, PyYAML. (Run inside the project venv.)
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import shutil
+import sys
+import time
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import yaml
+
+log = logging.getLogger("evaluate")
+
+CANONICAL_CLASSES: List[str] = [
+    "garbage_pile",
+    "garbage_bag",
+    "litter",
+    "overflowing_bin",
+]
+
+# ultralytics plot filenames -> friendly copy name in docs/
+PLOT_FILES = {
+    "confusion_matrix.png": "confusion_matrix.png",
+    "confusion_matrix_normalized.png": "confusion_matrix_normalized.png",
+    "PR_curve.png": "pr_curve.png",
+    "P_curve.png": "p_curve.png",
+    "R_curve.png": "r_curve.png",
+    "F1_curve.png": "f1_curve.png",
+    "results.png": "results.png",
+}
+
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+
+def f1(p: float, r: float) -> float:
+    return (2 * p * r / (p + r)) if (p + r) > 0 else 0.0
+
+
+def resolve_test_images(data_yaml: Path) -> Optional[Path]:
+    """Return the test images dir from dataset.yaml, if it exists."""
+    try:
+        doc = yaml.safe_load(data_yaml.read_text()) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        log.warning("Cannot read %s: %s", data_yaml, exc)
+        return None
+    root = data_yaml.parent / str(doc.get("path", "."))
+    test_rel = doc.get("test") or doc.get("val")
+    if not test_rel:
+        return None
+    cand = (root / str(test_rel)).resolve()
+    return cand if cand.is_dir() else None
+
+
+def measure_latency(model, images_dir: Path, max_images: int = 100) -> Optional[float]:
+    """Mean inference latency (ms/image) on CPU over up to max_images."""
+    imgs = [p for p in sorted(images_dir.rglob("*"))
+            if p.suffix.lower() in IMAGE_EXTS][:max_images]
+    if not imgs:
+        log.warning("No images found for latency measurement in %s", images_dir)
+        return None
+
+    # Warmup (first call includes graph init).
+    try:
+        model.predict(str(imgs[0]), device="cpu", verbose=False)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Latency warmup failed: %s", exc)
+        return None
+
+    t0 = time.perf_counter()
+    for p in imgs:
+        model.predict(str(p), device="cpu", verbose=False)
+    elapsed = time.perf_counter() - t0
+    return (elapsed / len(imgs)) * 1000.0
+
+
+def extract_metrics(metrics, names: Dict[int, str]) -> Dict:
+    """Pull scalar + per-class metrics out of an ultralytics DetMetrics."""
+    box = metrics.box
+    mp = float(box.mp)          # mean precision
+    mr = float(box.mr)          # mean recall
+    map50 = float(box.map50)
+    map5095 = float(box.map)
+
+    per_class = []
+    try:
+        # box.ap_class_index maps row -> class id; box.ap50 / box.maps per class.
+        ap50 = list(box.ap50)
+        ap = list(box.ap.mean(1)) if hasattr(box.ap, "mean") else list(box.maps)
+        idxs = list(box.ap_class_index)
+        p_arr = list(box.p)
+        r_arr = list(box.r)
+        for row, cid in enumerate(idxs):
+            per_class.append({
+                "name": names.get(int(cid), str(cid)),
+                "precision": float(p_arr[row]),
+                "recall": float(r_arr[row]),
+                "ap50": float(ap50[row]),
+                "ap5095": float(ap[row]),
+                "f1": f1(float(p_arr[row]), float(r_arr[row])),
+            })
+    except Exception as exc:  # noqa: BLE001 - be robust to API drift
+        log.warning("Could not extract per-class metrics: %s", exc)
+
+    return {
+        "map50": map50,
+        "map5095": map5095,
+        "precision": mp,
+        "recall": mr,
+        "f1": f1(mp, mr),
+        "per_class": per_class,
+    }
+
+
+def copy_plots(save_dir: Path, docs_dir: Path) -> List[str]:
+    """Copy known ultralytics plots into docs/. Robust to missing files."""
+    copied: List[str] = []
+    for src_name, dst_name in PLOT_FILES.items():
+        src = save_dir / src_name
+        if src.is_file():
+            shutil.copy2(src, docs_dir / dst_name)
+            copied.append(dst_name)
+        else:
+            log.debug("Plot not produced: %s", src_name)
+    return copied
+
+
+def write_metrics_md(
+    out: Path,
+    m: Dict,
+    weights: Path,
+    data: Path,
+    latency_ms: Optional[float],
+    copied_plots: List[str],
+    n_test: Optional[int],
+) -> None:
+    target = 0.85
+    status = "PASS" if m["map50"] >= target else "BELOW TARGET"
+    lines: List[str] = []
+    lines.append("# Model Evaluation Metrics\n")
+    lines.append("_Generated by `ml/evaluate.py`. Do not edit by hand._\n")
+    lines.append(f"- Weights: `{weights}`")
+    lines.append(f"- Data config: `{data}`")
+    if n_test is not None:
+        lines.append(f"- Test images: {n_test}")
+    lines.append(f"- Target: mAP@0.5 >= {target:.2f} -> **{status}** "
+                 f"(got {m['map50']:.4f})\n")
+
+    lines.append("## Overall\n")
+    lines.append("| Metric | Value |")
+    lines.append("|---|---|")
+    lines.append(f"| mAP@0.5 | {m['map50']:.4f} |")
+    lines.append(f"| mAP@0.5:0.95 | {m['map5095']:.4f} |")
+    lines.append(f"| Precision | {m['precision']:.4f} |")
+    lines.append(f"| Recall | {m['recall']:.4f} |")
+    lines.append(f"| F1 | {m['f1']:.4f} |")
+    if latency_ms is not None:
+        lines.append(f"| Mean CPU latency | {latency_ms:.1f} ms/image |")
+    lines.append("")
+
+    lines.append("## Per-class\n")
+    lines.append("| Class | Precision | Recall | F1 | AP@0.5 | AP@0.5:0.95 |")
+    lines.append("|---|---|---|---|---|---|")
+    if m["per_class"]:
+        for c in m["per_class"]:
+            lines.append(
+                f"| {c['name']} | {c['precision']:.4f} | {c['recall']:.4f} | "
+                f"{c['f1']:.4f} | {c['ap50']:.4f} | {c['ap5095']:.4f} |")
+    else:
+        lines.append("| _(per-class metrics unavailable)_ | | | | | |")
+    lines.append("")
+
+    if copied_plots:
+        lines.append("## Plots\n")
+        for name in copied_plots:
+            label = name.replace("_", " ").replace(".png", "").title()
+            lines.append(f"### {label}\n")
+            lines.append(f"![{label}]({name})\n")
+
+    out.write_text("\n".join(lines) + "\n")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Evaluate YOLOv8 on test split.")
+    here = Path(__file__).parent
+    parser.add_argument("--weights", type=Path, default=here / "weights" / "best.pt")
+    parser.add_argument("--data", type=Path, default=here / "dataset.yaml")
+    parser.add_argument("--docs-dir", type=Path,
+                        default=here.parent / "docs",
+                        help="Where to write metrics.md and plots.")
+    parser.add_argument("--split", default="test", choices=["test", "val"],
+                        help="Which split to evaluate.")
+    parser.add_argument("--imgsz", type=int, default=640)
+    parser.add_argument("--conf", type=float, default=0.001,
+                        help="Confidence threshold for val (low = full PR curve).")
+    parser.add_argument("--iou", type=float, default=0.6)
+    parser.add_argument("--latency-images", type=int, default=100)
+    parser.add_argument("--no-latency", action="store_true",
+                        help="Skip CPU latency measurement.")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
+
+    if not args.weights.is_file():
+        log.error("Weights not found: %s -- train first, then drop best.pt here.",
+                  args.weights)
+        return 2
+    if not args.data.is_file():
+        log.error("Data config not found: %s", args.data)
+        return 2
+
+    try:
+        from ultralytics import YOLO
+    except ImportError:
+        log.error("ultralytics not installed. `pip install ultralytics`.")
+        return 2
+
+    args.docs_dir.mkdir(parents=True, exist_ok=True)
+
+    log.info("Loading weights: %s", args.weights)
+    model = YOLO(str(args.weights))
+
+    log.info("Running validation on '%s' split...", args.split)
+    metrics = model.val(
+        data=str(args.data), split=args.split, imgsz=args.imgsz,
+        conf=args.conf, iou=args.iou, plots=True, verbose=args.verbose,
+    )
+
+    names = dict(getattr(model, "names", {})) or {
+        i: n for i, n in enumerate(CANONICAL_CLASSES)}
+    parsed = extract_metrics(metrics, names)
+
+    # Locate the save dir ultralytics used for plots.
+    save_dir = Path(getattr(metrics, "save_dir", "") or "")
+    copied = copy_plots(save_dir, args.docs_dir) if save_dir.is_dir() else []
+    if not copied:
+        log.warning("No ultralytics plots found in %s", save_dir)
+
+    # Latency.
+    latency_ms = None
+    n_test = None
+    test_dir = resolve_test_images(args.data)
+    if test_dir:
+        n_test = len([p for p in test_dir.rglob("*")
+                      if p.suffix.lower() in IMAGE_EXTS])
+    if not args.no_latency and test_dir:
+        log.info("Measuring CPU inference latency over up to %d images...",
+                 args.latency_images)
+        latency_ms = measure_latency(model, test_dir, args.latency_images)
+        if latency_ms is not None:
+            log.info("Mean CPU latency: %.1f ms/image", latency_ms)
+
+    out_md = args.docs_dir / "metrics.md"
+    write_metrics_md(out_md, parsed, args.weights, args.data,
+                     latency_ms, copied, n_test)
+
+    # Console summary.
+    log.info("=== Evaluation summary ===")
+    log.info("mAP@0.5=%.4f  mAP@0.5:0.95=%.4f  P=%.4f  R=%.4f  F1=%.4f",
+             parsed["map50"], parsed["map5095"], parsed["precision"],
+             parsed["recall"], parsed["f1"])
+    for c in parsed["per_class"]:
+        log.info("  %-16s AP50=%.4f AP=%.4f", c["name"], c["ap50"], c["ap5095"])
+    if latency_ms is not None:
+        log.info("  CPU latency: %.1f ms/image", latency_ms)
+    log.info("Wrote %s (+%d plots)", out_md, len(copied))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

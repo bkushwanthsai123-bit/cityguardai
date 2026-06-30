@@ -1,0 +1,73 @@
+# Smart City Garbage Detection - full stack
+# Services: ollama (LLM), api (FastAPI + YOLOv8), dashboard (Streamlit)
+# SQLite lives on a shared named volume mounted into the api container.
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: scg-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: scg-api
+    depends_on:
+      ollama:
+        condition: service_started
+    environment:
+      # SQLite file persisted on the shared volume mounted at /data
+      DB_URL: sqlite:////data/smartcity.db
+      MODEL_PATH: ml/weights/best.pt
+      CONF_THRESHOLD: "0.25"
+      LLM_PROVIDER: ollama
+      LLM_MODEL: llama3.1:8b
+      OLLAMA_HOST: http://ollama:11434
+      UPLOAD_DIR: /data/uploads
+    ports:
+      - "8000:8000"
+    volumes:
+      - app_data:/data
+      - ./ml/weights:/app/ml/weights
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: scg-dashboard
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      API_BASE_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8501/_stcore/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+  app_data:

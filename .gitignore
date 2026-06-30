@@ -1,0 +1,56 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Environment / secrets ---
+.env
+
+# --- Database ---
+*.db
+*.sqlite
+*.sqlite3
+smartcity.db
+
+# --- Uploads & runtime artifacts ---
+uploads/
+runs/
+*.log
+
+# --- ML weights & datasets (large; not versioned) ---
+ml/weights/*.pt
+ml/datasets/
+!ml/weights/.gitkeep
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# --- Docker ---
+ollama_data/
+
+# --- Docs export ---
+docs/architecture.png
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+frontend/.next/
+
+# --- Model weights anywhere ---
+*.pt
+!ml/weights/.gitkeep
