@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "llama3.1:8b"
     LLM_PROVIDER: str = "ollama"
     CONF_THRESHOLD: float = 0.25
+    # Inference image size. The trained weights are undertrained and lose
+    # small objects when high-res photos are downscaled to the YOLO default
+    # of 640; 1280 recovers far more true detections at a modest latency cost.
+    IMGSZ: int = 1280
     UPLOAD_DIR: str = "./uploads"
 
     model_config = SettingsConfigDict(

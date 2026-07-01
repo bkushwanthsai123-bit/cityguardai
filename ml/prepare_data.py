@@ -3,7 +3,7 @@
 
 Ingests one or more manually-downloaded YOLOv8-format exports placed under
 ``ml/data/raw/`` (e.g. Roboflow Universe exports and/or TACO converted to
-YOLO format), remaps their class names to the 4 canonical classes, drops
+YOLO format), remaps their class names to the 5 canonical classes, drops
 near-duplicate images, and writes an 80/10/10 train/val/test split into
 ``ml/data/{train,val,test}/{images,labels}``. Finally it refreshes
 ``ml/dataset.yaml``.
@@ -41,59 +41,51 @@ from PIL import Image
 # app/detector.py / CONTRACT.md. Do not reorder.
 # --------------------------------------------------------------------------- #
 CANONICAL_CLASSES: List[str] = [
-    "garbage_pile",
-    "garbage_bag",
-    "litter",
-    "overflowing_bin",
+    "Glass",
+    "Metal",
+    "Paper",
+    "Plastic",
+    "Waste",
 ]
 CLASS_TO_INDEX: Dict[str, int] = {n: i for i, n in enumerate(CANONICAL_CLASSES)}
 
-# Configurable mapping from raw/source class names (lowercased, stripped) to a
-# canonical class. Edit this to cover the label vocabulary of the datasets you
-# actually downloaded. Source names not present here are dropped (with a warn)
-# unless they already match a canonical name.
+# Configurable mapping from raw/source class names (lowercased, stripped via
+# _norm) to a canonical class. Edit this to cover the label vocabulary of the
+# datasets you actually downloaded. Source names not present here are dropped
+# (with a warn) unless they already match a canonical name.
 CLASS_NAME_MAP: Dict[str, str] = {
-    # garbage_pile
-    "garbage_pile": "garbage_pile",
-    "garbage": "garbage_pile",
-    "trash": "garbage_pile",
-    "trash_pile": "garbage_pile",
-    "garbage pile": "garbage_pile",
-    "dump": "garbage_pile",
-    "illegal_dumping": "garbage_pile",
-    "garbage_dump": "garbage_pile",
-    "waste": "garbage_pile",
-    "rubbish": "garbage_pile",
-    # garbage_bag
-    "garbage_bag": "garbage_bag",
-    "garbage bag": "garbage_bag",
-    "trash_bag": "garbage_bag",
-    "plastic_bag": "garbage_bag",
-    "bag": "garbage_bag",
-    "sack": "garbage_bag",
-    # litter
-    "litter": "litter",
-    "scattered_litter": "litter",
-    "plastic": "litter",
-    "bottle": "litter",
-    "can": "litter",
-    "cup": "litter",
-    "wrapper": "litter",
-    "cardboard": "litter",
-    "paper": "litter",
-    "cigarette": "litter",
-    "debris": "litter",
-    # overflowing_bin
-    "overflowing_bin": "overflowing_bin",
-    "overflowing bin": "overflowing_bin",
-    "overflow_bin": "overflowing_bin",
-    "full_bin": "overflowing_bin",
-    "overflowing_dustbin": "overflowing_bin",
-    "bin": "overflowing_bin",
-    "dustbin": "overflowing_bin",
-    "garbage_bin": "overflowing_bin",
-    "trash_bin": "overflowing_bin",
-    "dumpster": "overflowing_bin",
+    # Glass
+    "glass": "Glass",
+    "glass_bottle": "Glass",
+    "bottle_glass": "Glass",
+    # Metal
+    "metal": "Metal",
+    "can": "Metal",
+    "aluminium": "Metal",
+    "aluminum": "Metal",
+    "tin": "Metal",
+    "metal_can": "Metal",
+    # Paper
+    "paper": "Paper",
+    "cardboard": "Paper",
+    "carton": "Paper",
+    "newspaper": "Paper",
+    # Plastic
+    "plastic": "Plastic",
+    "plastic_bottle": "Plastic",
+    "plastic_bag": "Plastic",
+    "bottle": "Plastic",
+    "cup": "Plastic",
+    "wrapper": "Plastic",
+    # Waste (generic / mixed)
+    "waste": "Waste",
+    "trash": "Waste",
+    "garbage": "Waste",
+    "litter": "Waste",
+    "rubbish": "Waste",
+    "debris": "Waste",
+    "biodegradable": "Waste",
+    "organic": "Waste",
 }
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}

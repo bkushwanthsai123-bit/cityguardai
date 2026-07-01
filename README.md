@@ -191,9 +191,13 @@ Base URL `http://localhost:8000` · interactive docs at `/docs`.
 | ------ | ---------------------- | ---------------------------------------- |
 | GET    | `/health`              | Liveness + model/db/ollama status        |
 | POST   | `/detect`              | Detect on one image -> stored incident   |
+| POST   | `/detect/annotated`    | Image with boxes/masks drawn (JPEG)      |
 | POST   | `/detect/batch`        | Detect on many images                    |
+| POST   | `/detect/video`        | Detect on a video -> aggregated incident |
+| POST   | `/detect/video/annotated` | Annotated video as animated GIF       |
 | GET    | `/incidents`           | List/filter incidents                    |
 | GET    | `/incidents/{id}`      | Fetch one incident                       |
+| GET    | `/incidents/{id}/annotated` | Serve stored annotated media (jpg/gif) |
 | PATCH  | `/incidents/{id}`      | Update status                            |
 | DELETE | `/incidents/{id}`      | Delete an incident                       |
 | GET    | `/analytics/summary`   | Aggregate counts + trend                 |
@@ -205,35 +209,40 @@ Full reference with curl examples: [`docs/api.md`](docs/api.md).
 
 ## Results
 
-> Placeholders - fill in after training/evaluation. See [`docs/brief.md`](docs/brief.md)
-> for the full methodology and rubric mapping.
+Deployed **YOLOv8m-seg** (5 classes), evaluated on the held-out test split of the
+Waste Detection dataset at imgsz 416. Full details + honest context in
+[`docs/metrics.md`](docs/metrics.md) and [`docs/brief.md`](docs/brief.md).
 
 ### Detection metrics
 
-| Metric          | YOLOv8s | YOLOv8m |
-| --------------- | ------- | ------- |
-| mAP@0.5         | _TBD_   | _TBD_   |
-| mAP@0.5:0.95    | _TBD_   | _TBD_   |
-| Precision       | _TBD_   | _TBD_   |
-| Recall          | _TBD_   | _TBD_   |
-| F1              | _TBD_   | _TBD_   |
+| Metric        | Value |
+| ------------- | ----- |
+| mAP@0.5       | 0.260 |
+| mAP@0.5:0.95  | 0.215 |
+| Precision     | 0.317 |
+| Recall        | 0.342 |
+| F1            | 0.329 |
 
 ### Per-class AP@0.5
 
 | Class   | AP@0.5 |
 | ------- | ------ |
-| Glass   | _TBD_  |
-| Metal   | _TBD_  |
-| Paper   | _TBD_  |
-| Plastic | _TBD_  |
-| Waste   | _TBD_  |
+| Glass   | 0.00   |
+| Metal   | 0.446  |
+| Paper   | 0.143  |
+| Plastic | 0.474  |
+| Waste   | 0.239  |
 
-### Latency (ms/image)
+> Cross-dataset held-out eval — absolute mAP understates real-world detection
+> (see demos: glass bottle @ 0.87). On-distribution fine-tuning via `ml/train.py`
+> raises these numbers materially.
 
-| Device              | YOLOv8s | YOLOv8m |
-| ------------------- | ------- | ------- |
-| CPU (Apple Silicon) | _TBD_   | _TBD_   |
-| GPU (Colab T4)      | _TBD_   | _TBD_   |
+### Latency (ms/image, imgsz 416)
+
+| Device                  | YOLOv8m-seg |
+| ----------------------- | ----------- |
+| Apple Silicon GPU (MPS) | ~44         |
+| CPU (Apple Silicon)     | ~87         |
 
 ---
 

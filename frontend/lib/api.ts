@@ -16,6 +16,7 @@ export interface Incident {
   id: number;
   created_at: string;
   image_path: string | null;
+  annotated_path: string | null;
   detections: Detection[];
   num_detections: number;
   classes: string[];
@@ -136,6 +137,30 @@ export async function detect(
   });
   if (!res.ok) {
     throw new Error(`Detection failed: ${res.status} ${res.statusText}`);
+  }
+  return (await res.json()) as Incident;
+}
+
+export async function detectVideo(
+  file: File,
+  meta: DetectMeta = {},
+  maxFrames = 24
+): Promise<Incident> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("max_frames", String(maxFrames));
+  if (meta.lat !== undefined && meta.lat !== null)
+    form.append("lat", String(meta.lat));
+  if (meta.lon !== undefined && meta.lon !== null)
+    form.append("lon", String(meta.lon));
+  if (meta.address) form.append("address", meta.address);
+
+  const res = await fetch(`${API}/detect/video`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    throw new Error(`Video detection failed: ${res.status} ${res.statusText}`);
   }
   return (await res.json()) as Incident;
 }

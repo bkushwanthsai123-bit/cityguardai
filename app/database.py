@@ -40,6 +40,31 @@ def init_db() -> None:
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _ensure_columns()
+
+
+def _ensure_columns() -> None:
+    """Lightweight, Alembic-free migration for added nullable columns.
+
+    ``create_all`` never ALTERs an existing table, so columns added to a model
+    after the DB was first created are missing on old SQLite files. Add them
+    idempotently. Only supports SQLite (the app's default backend).
+    """
+    if not settings.DB_URL.startswith("sqlite"):
+        return
+    from sqlalchemy import text
+
+    wanted = {"annotated_path": "VARCHAR"}
+    with engine.begin() as conn:
+        existing = {
+            row[1]  # column name
+            for row in conn.execute(text("PRAGMA table_info(incidents)"))
+        }
+        for name, coltype in wanted.items():
+            if name not in existing:
+                conn.execute(
+                    text(f"ALTER TABLE incidents ADD COLUMN {name} {coltype}")
+                )
 
 
 def get_db() -> Generator[Session, None, None]:

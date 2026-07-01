@@ -71,6 +71,7 @@ class IncidentOut(BaseModel):
     id: int
     created_at: datetime
     image_path: Optional[str] = None
+    annotated_path: Optional[str] = None
     detections: list
     num_detections: int
     classes: list[str]

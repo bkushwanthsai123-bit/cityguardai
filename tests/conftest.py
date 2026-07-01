@@ -55,8 +55,23 @@ class _FakeDetector:
         self.loaded = True
         return self
 
-    def detect(self, image_bytes):  # noqa: D401 - mirror real signature
+    def detect(self, image_bytes, imgsz=None):  # noqa: D401 - mirror real signature
+        self.last_imgsz = imgsz
         return self._result
+
+    def annotate(self, image_bytes, imgsz=None):  # noqa: D401 - mirror real signature
+        # Return small valid JPEG-ish bytes; router only saves them to disk.
+        return b"\xff\xd8\xff\xe0annotated\xff\xd9"
+
+    def annotate_video(self, video_path, imgsz=None, max_frames=200, **kwargs):
+        summary = {
+            "frames_processed": 3,
+            "frames_with_garbage": 3,
+            "class_counts": {"Waste": 3},
+            "capped_at_max_frames": False,
+            "max_frames": max_frames,
+        }
+        return b"GIF89a-annotated", summary
 
 
 class _FakeProvider:

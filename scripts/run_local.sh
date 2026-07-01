@@ -8,7 +8,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 VENV="${VENV:-.venv}"
-LLM_MODEL="${LLM_MODEL:-llama3.1:8b}"
+LLM_MODEL="${LLM_MODEL:-llama3.2:1b}"
 API_HOST="${API_HOST:-0.0.0.0}"
 API_PORT="${API_PORT:-8000}"
 

@@ -100,6 +100,46 @@ def api_detect(
         raise ApiError(str(exc)) from exc
 
 
+def api_get_annotated(incident_id: Any) -> Optional[bytes]:
+    """Fetch an incident's stored annotated media (boxes drawn), a .jpg or .gif.
+
+    Generated once at incident creation, so no second inference pass is needed.
+    """
+    if incident_id is None:
+        return None
+    try:
+        resp = requests.get(_url(f"/incidents/{incident_id}/annotated"), timeout=60)
+        resp.raise_for_status()
+        return resp.content
+    except requests.RequestException:
+        return None
+
+
+def api_detect_video(
+    file_name: str,
+    file_bytes: bytes,
+    content_type: str,
+    lat: Optional[float],
+    lon: Optional[float],
+    address: Optional[str],
+) -> Any:
+    """Run video detection: samples frames, stores one aggregated incident."""
+    files = {"file": (file_name, file_bytes, content_type or "application/octet-stream")}
+    data: Dict[str, Any] = {}
+    if lat is not None:
+        data["lat"] = lat
+    if lon is not None:
+        data["lon"] = lon
+    if address:
+        data["address"] = address
+    try:
+        resp = requests.post(_url("/detect/video"), files=files, data=data, timeout=300)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as exc:
+        raise ApiError(str(exc)) from exc
+
+
 def check_health() -> Optional[Dict[str, Any]]:
     try:
         return api_get("/health")
@@ -174,6 +214,75 @@ def sidebar_filters() -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
+def tab_overview(incidents: List[Dict[str, Any]]) -> None:
+    """At-a-glance summary: KPIs, breakdowns, top hotspot, trend, recents."""
+    st.subheader("Overview")
+    try:
+        summary = api_get("/analytics/summary")
+    except ApiError as exc:
+        st.error("Could not load overview: " + str(exc))
+        return
+
+    by_status = summary.get("by_status", {}) or {}
+    by_severity = summary.get("by_severity", {}) or {}
+    by_priority = summary.get("by_priority", {}) or {}
+    high = (by_severity.get("high", 0) or 0) + (by_severity.get("critical", 0) or 0)
+
+    k = st.columns(5)
+    k[0].metric("Total incidents", summary.get("total", 0))
+    k[1].metric("Open", by_status.get("open", 0))
+    k[2].metric("In progress", by_status.get("in_progress", 0))
+    k[3].metric("Resolved", by_status.get("resolved", 0))
+    k[4].metric("High / Critical", high)
+
+    st.markdown("---")
+    left, right = st.columns([2, 1])
+    with left:
+        b = st.columns(2)
+        with b[0]:
+            st.caption("By severity")
+            st.bar_chart(by_severity)
+        with b[1]:
+            st.caption("By priority")
+            st.bar_chart(by_priority)
+        trend = summary.get("trend", []) or []
+        if trend:
+            st.caption("Trend (last 30 days)")
+            st.line_chart({str(p.get("date")): p.get("count", 0) for p in trend})
+    with right:
+        st.caption("Top hotspot")
+        try:
+            hotspots = api_get("/analytics/hotspots")
+        except ApiError:
+            hotspots = []
+        if hotspots:
+            top = hotspots[0]
+            label = top.get("address") or top.get("area") or (
+                f"{top.get('lat')}, {top.get('lon')}"
+                if top.get("lat") is not None else "Unknown location"
+            )
+            count = top.get("count") or top.get("incident_count") or top.get("num_incidents")
+            st.metric(str(label), count if count is not None else "-")
+        else:
+            st.info("No hotspots yet.")
+
+        st.caption("By department")
+        st.bar_chart(summary.get("by_department", {}) or {})
+
+    st.markdown("---")
+    st.caption("Recent incidents")
+    recent = incidents[:5]
+    if not recent:
+        st.info("No incidents match the current filters.")
+        return
+    for inc in recent:
+        c = st.columns([1, 4, 2, 2])
+        c[0].markdown(severity_badge(inc.get("severity", "")), unsafe_allow_html=True)
+        c[1].write("**#" + str(inc.get("id")) + "** " + str(inc.get("title", "")))
+        c[2].caption(str(inc.get("priority", "")) + " | " + str(inc.get("status", "")))
+        c[3].caption(str(inc.get("created_at", ""))[:19].replace("T", " "))
+
+
 def tab_incidents(incidents: List[Dict[str, Any]]) -> None:
     st.subheader("Incidents")
     if not incidents:
@@ -224,10 +333,21 @@ def tab_incidents(incidents: List[Dict[str, Any]]) -> None:
                         st.error("Delete failed: " + str(exc))
 
 
+VIDEO_EXTS = ("mp4", "mov", "webm", "avi", "mkv")
+
+
+def _is_video(uploaded) -> bool:
+    """Whether the uploaded file is a video (by extension or MIME type)."""
+    name = getattr(uploaded, "name", "") or ""
+    ctype = getattr(uploaded, "type", "") or ""
+    return name.lower().rsplit(".", 1)[-1] in VIDEO_EXTS or ctype.startswith("video/")
+
+
 def tab_upload_detect() -> None:
     st.subheader("Upload & Detect")
     uploaded = st.file_uploader(
-        "Upload an image", type=["jpg", "jpeg", "png", "bmp", "webp"]
+        "Upload an image or video",
+        type=["jpg", "jpeg", "png", "bmp", "webp", *VIDEO_EXTS],
     )
     col1, col2 = st.columns(2)
     with col1:
@@ -236,27 +356,46 @@ def tab_upload_detect() -> None:
     with col2:
         address = st.text_input("Address (optional)")
 
+    is_video = uploaded is not None and _is_video(uploaded)
     if uploaded is not None:
-        st.image(uploaded, caption="Uploaded image", use_column_width=True)
+        if is_video:
+            st.video(uploaded)
+            st.caption("Long videos are frame-sampled and capped for speed.")
+        else:
+            st.image(uploaded, caption="Uploaded image", use_column_width=True)
 
     if st.button("Run detection", disabled=uploaded is None):
         if uploaded is None:
-            st.warning("Please upload an image first.")
+            st.warning("Please upload an image or video first.")
             return
-        with st.spinner("Detecting and generating report..."):
+        content_type = getattr(uploaded, "type", "application/octet-stream")
+        spin = "Analysing video frames..." if is_video else "Detecting and generating report..."
+        with st.spinner(spin):
             try:
-                incident = api_detect(
-                    uploaded.name,
-                    uploaded.getvalue(),
-                    getattr(uploaded, "type", "application/octet-stream"),
-                    lat if lat != 0.0 else None,
-                    lon if lon != 0.0 else None,
-                    address or None,
-                )
+                if is_video:
+                    incident = api_detect_video(
+                        uploaded.name, uploaded.getvalue(), content_type,
+                        lat if lat != 0.0 else None,
+                        lon if lon != 0.0 else None,
+                        address or None,
+                    )
+                else:
+                    incident = api_detect(
+                        uploaded.name, uploaded.getvalue(), content_type,
+                        lat if lat != 0.0 else None,
+                        lon if lon != 0.0 else None,
+                        address or None,
+                    )
             except ApiError as exc:
                 st.error("Detection failed: " + str(exc))
                 return
         st.success("Incident created (id " + str(incident.get("id")) + ").")
+        # The annotated media (boxes drawn) is generated once when the incident
+        # is created; fetch the stored file instead of re-running detection.
+        annotated = api_get_annotated(incident.get("id"))
+        if annotated:
+            caption = "Detections (animated)" if is_video else "Detections"
+            st.image(annotated, caption=caption, use_column_width=True)
         render_incident_report(incident)
 
 
@@ -277,7 +416,12 @@ def tab_map(incidents: List[Dict[str, Any]]) -> None:
 
         center_lat = sum(i["lat"] for i in geo) / len(geo)
         center_lon = sum(i["lon"] for i in geo) / len(geo)
-        fmap = folium.Map(location=[center_lat, center_lon], zoom_start=12)
+        # Dark basemap to match the dashboard's dark theme.
+        fmap = folium.Map(
+            location=[center_lat, center_lon],
+            zoom_start=12,
+            tiles="CartoDB dark_matter",
+        )
         for inc in geo:
             color = SEVERITY_COLORS.get(inc.get("severity", ""), "#555555")
             popup = (
@@ -389,14 +533,16 @@ def main() -> None:
         st.error("Could not load incidents: " + str(exc))
         incidents = []
 
-    tabs = st.tabs(["Incidents", "Upload & Detect", "Map", "Analytics"])
+    tabs = st.tabs(["Overview", "Incidents", "Upload & Detect", "Map", "Analytics"])
     with tabs[0]:
-        tab_incidents(incidents)
+        tab_overview(incidents)
     with tabs[1]:
-        tab_upload_detect()
+        tab_incidents(incidents)
     with tabs[2]:
-        tab_map(incidents)
+        tab_upload_detect()
     with tabs[3]:
+        tab_map(incidents)
+    with tabs[4]:
         tab_analytics()
 
 

@@ -28,10 +28,11 @@ import yaml
 log = logging.getLogger("evaluate")
 
 CANONICAL_CLASSES: List[str] = [
-    "garbage_pile",
-    "garbage_bag",
-    "litter",
-    "overflowing_bin",
+    "Glass",
+    "Metal",
+    "Paper",
+    "Plastic",
+    "Waste",
 ]
 
 # ultralytics plot filenames -> friendly copy name in docs/

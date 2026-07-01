@@ -1,0 +1,47 @@
+flowchart TD
+    subgraph Clients
+        U[Citizen app / CCTV frame / patrol upload]
+        WEB[Next.js Dashboard - primary<br/>map · filters · analytics · detect]
+        DASH[Streamlit Dashboard - alternate<br/>map · filters · analytics]
+    end
+
+    subgraph API[FastAPI Service - localhost:8000]
+        EP_DET[POST /detect<br/>POST /detect/batch]
+        EP_INC[GET/PATCH/DELETE /incidents]
+        EP_AN[GET /analytics/summary<br/>GET /analytics/hotspots]
+        EP_H[GET /health]
+        DET[YOLOv8 Detector<br/>app/detector.py]
+        subgraph LLM[LLM Layer - app/llm]
+            FACT[factory.get_provider]
+            PROV[OllamaProvider<br/>format=json]
+            RULES[Deterministic rules<br/>severity · priority · dept · SLA]
+            PROMPT[prompts.py<br/>system + few-shot]
+        end
+    end
+
+    OLLAMA[(Ollama<br/>llama3.2:1b<br/>:11434)]
+    DB[(SQLite<br/>incidents table)]
+
+    U -->|multipart image + lat/lon| EP_DET
+    EP_DET --> DET
+    DET -->|DetectionResult| FACT
+    FACT --> PROV
+    PROMPT --> PROV
+    PROV -->|/api/chat JSON| OLLAMA
+    OLLAMA -->|draft title/description/action| PROV
+    PROV --> RULES
+    PROV -. Ollama unreachable .-> RULES
+    RULES -->|validated IncidentReport| EP_DET
+    EP_DET -->|persist| DB
+    EP_DET -->|IncidentOut| U
+
+    WEB -->|REST queries| EP_INC
+    WEB --> EP_AN
+    WEB -->|multipart image| EP_DET
+    DASH -->|REST queries| EP_INC
+    DASH --> EP_AN
+    EP_INC --> DB
+    EP_AN --> DB
+    EP_H --> DB
+    EP_H --> OLLAMA
+    EP_H --> DET

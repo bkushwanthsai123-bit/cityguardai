@@ -259,7 +259,8 @@ function Drawer({
   onStatus: (s: Status) => void;
   onDelete: () => void;
 }) {
-  const img = imageUrl(incident.image_path);
+  // Prefer annotated media (boxes/labels); .jpg and .gif both render in <img>.
+  const img = imageUrl(incident.annotated_path ?? incident.image_path);
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
       <div

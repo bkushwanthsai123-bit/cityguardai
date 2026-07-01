@@ -60,9 +60,12 @@ flowchart TD
 > static files under `/uploads`, so browser clients (the Next.js dashboard) can
 > call the API cross-origin and render stored images directly.
 
-> A PNG render (`docs/architecture.png`) can be exported from the Mermaid source
-> above using the Mermaid CLI (`mmdc -i docs/architecture.md -o docs/architecture.png`)
-> or the mermaid.live editor.
+A rendered PNG of the diagram above (for viewers that don't render Mermaid):
+
+![Architecture diagram](architecture.png)
+
+> Regenerate with: `mmdc -i docs/architecture.mmd -o docs/architecture.png -b white -w 1400`
+> (the Mermaid source is extracted to `docs/architecture.mmd`).
 
 ## Components
 

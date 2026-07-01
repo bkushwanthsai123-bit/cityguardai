@@ -110,6 +110,54 @@ Response: `List[IncidentOut]`.
 
 ---
 
+### POST /detect/annotated
+
+Run detection on an image and return the image with boxes + segmentation masks
+drawn (JPEG). Visual preview only — does **not** persist an incident. Multipart
+form: `file` (required, image), optional `imgsz`.
+
+```bash
+curl -X POST http://localhost:8000/detect/annotated \
+  -F "file=@samples/dump1.jpg" -o annotated.jpg
+```
+
+Response: `image/jpeg` bytes.
+
+---
+
+### POST /detect/video
+
+Run detection on a video: samples frames, detects per frame, and stores one
+aggregated incident (the peak-detection frame represents it). Multipart form:
+`file` (required, video), optional `lat`, `lon`, `address`, `imgsz`,
+`max_frames` (1–120, default 24).
+
+```bash
+curl -X POST http://localhost:8000/detect/video \
+  -F "file=@samples/clip.mp4" -F "lat=12.9716" -F "lon=77.5946"
+```
+
+Response: `IncidentOut`. The stored incident's `annotated_path` points at an
+animated GIF with detections drawn (served via `GET /incidents/{id}/annotated`).
+
+---
+
+### POST /detect/video/annotated
+
+Run detection on a video and return an animated GIF with detections drawn on
+every sampled frame. Visual only — does **not** persist. Multipart form: `file`
+(required, video), optional `imgsz`, `max_frames` (1–600, default 200).
+Response headers include `X-Frames-Processed`, `X-Frames-With-Garbage`.
+
+```bash
+curl -X POST http://localhost:8000/detect/video/annotated \
+  -F "file=@samples/clip.mp4" -o detections.gif
+```
+
+Response: `image/gif` bytes.
+
+---
+
 ### GET /incidents
 
 List incidents with optional filters.
@@ -140,6 +188,21 @@ curl http://localhost:8000/incidents/1
 ```
 
 Response: `IncidentOut`.
+
+---
+
+### GET /incidents/{id}/annotated
+
+Serve the incident's stored annotated media (boxes/masks drawn) — a `.jpg` for
+image incidents or an animated `.gif` for video incidents. Generated once at
+incident creation, so no re-inference. Returns `404` if the incident or its
+annotated media is missing.
+
+```bash
+curl http://localhost:8000/incidents/1/annotated -o annotated.jpg
+```
+
+Response: `image/jpeg` or `image/gif` bytes.
 
 ---
 

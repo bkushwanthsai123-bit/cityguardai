@@ -1,0 +1,7 @@
+[theme]
+# Dark mode for the Smart City garbage-detection dashboard.
+base = "dark"
+primaryColor = "#ef6c00"          # orange accent (matches severity palette)
+backgroundColor = "#0e1117"       # main canvas
+secondaryBackgroundColor = "#1a1d24"  # sidebar / cards
+textColor = "#fafafa"

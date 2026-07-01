@@ -25,13 +25,16 @@ class Detector:
         self,
         model_path: str | None = None,
         conf_threshold: float | None = None,
+        imgsz: int | None = None,
     ) -> None:
         self.model_path = model_path or settings.MODEL_PATH
         self.conf_threshold = (
             conf_threshold if conf_threshold is not None else settings.CONF_THRESHOLD
         )
+        self.imgsz = imgsz if imgsz is not None else settings.IMGSZ
         self.model = None
         self.using_fallback = False
+        self.device = "cpu"  # resolved in load() to mps/cuda when available
 
     def load(self) -> "Detector":
         """Warm-load the YOLO model.
@@ -52,8 +55,30 @@ class Detector:
             self.using_fallback = True
 
         self.model = YOLO(weights)
-        logger.info("YOLO model loaded from %r (fallback=%s)", weights, self.using_fallback)
+        self.device = self._pick_device()
+        logger.info(
+            "YOLO model loaded from %r (fallback=%s, device=%s)",
+            weights, self.using_fallback, self.device,
+        )
         return self
+
+    @staticmethod
+    def _pick_device() -> str:
+        """Pick the fastest available inference device (mps > cuda > cpu).
+
+        Ultralytics does not auto-select Apple's MPS backend; doing so here
+        gives a ~3-4x speedup on Apple Silicon (notably for video).
+        """
+        try:
+            import torch
+
+            if torch.backends.mps.is_available():
+                return "mps"
+            if torch.cuda.is_available():
+                return "cuda"
+        except Exception:  # noqa: BLE001 - torch missing/broken -> cpu
+            pass
+        return "cpu"
 
     @property
     def loaded(self) -> bool:
@@ -73,8 +98,14 @@ class Detector:
             return CLASS_NAMES[cls_id]
         return str(cls_id)
 
-    def detect(self, image_bytes: bytes) -> DetectionResult:
-        """Run detection on raw image bytes and return a DetectionResult."""
+    def detect(
+        self, image_bytes: bytes, imgsz: int | None = None
+    ) -> DetectionResult:
+        """Run detection on raw image bytes and return a DetectionResult.
+
+        ``imgsz`` overrides the configured inference size for this call only;
+        higher values recover more small objects at the cost of latency.
+        """
         if self.model is None:
             raise RuntimeError("Detector model is not loaded; call load() first.")
 
@@ -85,7 +116,11 @@ class Detector:
 
         start = time.perf_counter()
         results = self.model.predict(
-            source=image, conf=self.conf_threshold, verbose=False
+            source=image,
+            conf=self.conf_threshold,
+            imgsz=imgsz if imgsz is not None else self.imgsz,
+            device=self.device,
+            verbose=False,
         )
         inference_ms = (time.perf_counter() - start) * 1000.0
 
@@ -116,3 +151,152 @@ class Detector:
             image_height=img_h,
             inference_ms=inference_ms,
         )
+
+    def annotate(
+        self, image_bytes: bytes, imgsz: int | None = None
+    ) -> bytes:
+        """Run detection and return the image with boxes/masks/labels drawn.
+
+        Returns JPEG-encoded bytes. Uses the same conf/imgsz as ``detect`` so
+        the drawn boxes match the persisted incident.
+        """
+        if self.model is None:
+            raise RuntimeError("Detector model is not loaded; call load() first.")
+
+        import cv2
+        import numpy as np
+        from PIL import Image
+
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        # Downscale huge photos before drawing: res.plot() renders masks at the
+        # source resolution, so a multi-megapixel image with many detections can
+        # blow up memory ("Invalid buffer size"). Display-only, so this is safe.
+        max_side = 1600
+        if max(image.size) > max_side:
+            image.thumbnail((max_side, max_side))
+        results = self.model.predict(
+            source=image,
+            conf=self.conf_threshold,
+            imgsz=imgsz if imgsz is not None else self.imgsz,
+            device=self.device,
+            verbose=False,
+        )
+        # res.plot() returns a BGR ndarray with boxes + segmentation masks.
+        annotated_bgr = results[0].plot()
+        ok, buf = cv2.imencode(".jpg", annotated_bgr)
+        if not ok:
+            raise RuntimeError("failed to JPEG-encode the annotated image")
+        return np.asarray(buf).tobytes()
+
+    def annotate_video(
+        self,
+        video_path: str,
+        imgsz: int | None = None,
+        stride: int | None = None,
+        max_frames: int = 200,
+        out_width: int = 640,
+        gif_fps: int = 10,
+        video_imgsz: int = 640,
+    ) -> tuple[bytes, dict]:
+        """Detect on sampled video frames and return an annotated animated GIF.
+
+        Frames are sampled at ``stride`` (auto-derived from source fps toward
+        ``gif_fps`` when None), each run through the model and drawn with
+        ``res.plot()`` (boxes + segmentation masks), downscaled to ``out_width``,
+        and encoded as a looping GIF.
+
+        Per-frame inference defaults to ``video_imgsz`` (640) rather than the
+        configured ``self.imgsz`` (often 1280): running the heavy size on every
+        frame makes GIFs of real videos take minutes on CPU. 640 is ~5x faster
+        and visually equivalent for the preview. Pass ``imgsz`` to override.
+
+        Returns ``(gif_bytes, summary)`` where summary reports how many frames
+        were processed, how many contained garbage, per-class counts, and whether
+        the ``max_frames`` cap was hit (so nothing is silently truncated).
+        """
+        if self.model is None:
+            raise RuntimeError("Detector model is not loaded; call load() first.")
+
+        import cv2
+        from PIL import Image
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise RuntimeError(f"could not open video: {video_path}")
+
+        src_fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if stride is None:
+            # sample down to ~gif_fps; e.g. 30fps source -> every 3rd frame
+            stride = max(1, round(src_fps / gif_fps)) if src_fps > 0 else 3
+
+        pil_frames: list[Image.Image] = []
+        class_counts: dict[str, int] = {}
+        frames_with_garbage = 0
+        idx = 0
+        capped = False
+        try:
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                if idx % stride == 0:
+                    if len(pil_frames) >= max_frames:
+                        capped = True
+                        break
+                    # Downscale large frames (e.g. 4K) before predict/plot to
+                    # avoid the full-res mask-render memory blowup.
+                    fh, fw = frame.shape[:2]
+                    if fw > 1600:
+                        frame = cv2.resize(frame, (1600, round(fh * 1600 / fw)))
+                    res = self.model.predict(
+                        source=frame,
+                        conf=self.conf_threshold,
+                        imgsz=imgsz if imgsz is not None else video_imgsz,
+                        device=self.device,
+                        verbose=False,
+                    )[0]
+                    boxes = getattr(res, "boxes", None)
+                    if boxes is not None and len(boxes):
+                        frames_with_garbage += 1
+                        for b in boxes:
+                            name = self._class_name(int(b.cls[0].item()))
+                            class_counts[name] = class_counts.get(name, 0) + 1
+                    annotated_bgr = res.plot()
+                    annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
+                    h, w = annotated_rgb.shape[:2]
+                    if w > out_width:
+                        annotated_rgb = cv2.resize(
+                            annotated_rgb, (out_width, round(h * out_width / w))
+                        )
+                    pil_frames.append(Image.fromarray(annotated_rgb))
+                idx += 1
+        finally:
+            cap.release()
+
+        if not pil_frames:
+            raise RuntimeError("no frames decoded from video")
+
+        buf = io.BytesIO()
+        pil_frames[0].save(
+            buf,
+            format="GIF",
+            save_all=True,
+            append_images=pil_frames[1:],
+            loop=0,
+            duration=int(1000 / max(gif_fps, 1)),
+            optimize=True,
+            disposal=2,
+        )
+
+        summary = {
+            "source_frames": total,
+            "source_fps": round(src_fps, 2),
+            "stride": stride,
+            "frames_processed": len(pil_frames),
+            "frames_with_garbage": frames_with_garbage,
+            "class_counts": class_counts,
+            "capped_at_max_frames": capped,
+            "max_frames": max_frames,
+        }
+        return buf.getvalue(), summary

@@ -5,7 +5,10 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -71,6 +74,25 @@ def get_incident(
     if incident is None:
         raise HTTPException(status_code=404, detail="Incident not found")
     return IncidentOut.model_validate(incident)
+
+
+@router.get("/{incident_id}/annotated")
+def get_incident_annotated(
+    incident_id: int, db: Session = Depends(get_db)
+) -> FileResponse:
+    """Serve the incident's annotated media (boxes drawn) — a .jpg or .gif.
+
+    This is generated once when the incident is created (image or video), so
+    the dashboard can display it without re-running inference.
+    """
+    incident = db.get(Incident, incident_id)
+    if incident is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    path = incident.annotated_path
+    if not path or not Path(path).is_file():
+        raise HTTPException(status_code=404, detail="No annotated media for this incident")
+    media_type = "image/gif" if path.lower().endswith(".gif") else "image/jpeg"
+    return FileResponse(path, media_type=media_type)
 
 
 @router.patch("/{incident_id}", response_model=IncidentOut)

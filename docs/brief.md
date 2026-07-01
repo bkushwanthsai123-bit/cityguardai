@@ -32,71 +32,78 @@ We use **Ultralytics YOLOv8** for object detection, evaluating two sizes:
   two-stage detectors (Faster R-CNN) that are heavier to deploy.
 - **Mature tooling**: one-line training/eval/export, ONNX/TensorRT export for
   edge, active maintenance.
-- **Right granularity**: garbage objects are mid-to-large, well-suited to
-  YOLO's grid; we do not need instance segmentation for incident routing, so
-  detection (bounding boxes) keeps the model light.
-- **s -> m -> l ladder** lets us trade accuracy for latency without changing any
+- **Right granularity**: the training data ships polygon (segmentation) labels,
+  so we train **YOLOv8-seg**, which yields both instance masks and bounding
+  boxes. Incident routing uses the boxes/classes; the masks improve the
+  annotated previews shown in the dashboard.
+- **n -> s -> m ladder** lets us trade accuracy for latency without changing any
   code, only the weights file.
 
 **Classes (5, fixed index order):** `Glass`, `Metal`, `Paper`, `Plastic`,
-`Waste`. The order is shared across `ml/dataset.yaml` and `app/detector.py`. The
-active model is a pretrained YOLOv8m-seg trash detector (`ml/weights/best.pt`,
-~0.43 mAP@0.5 on TACO); retraining via the Colab notebook yields higher accuracy.
+`Waste`. The order is shared across `ml/dataset.yaml` and `app/detector.py`.
+The model is a **YOLOv8-seg** detector fine-tuned on the 5-class waste dataset
+(§2) via `ml/train.py` (`model.train(...) -> model.val()`). Measured accuracy
+and latency are reported in §3-4. Weights live at `ml/weights/best.pt` and are
+served by the API; the API falls back to stock `yolov8n.pt` if they are absent.
 
 ---
 
 ## 2. Dataset
 
-- **Sources:** public waste/garbage detection datasets (e.g. TACO - Trash
-  Annotations in Context, open street-litter sets) plus curated/labeled
-  street-level images, normalized to the 5 project classes.
-- **Annotation format:** YOLO TXT (one `.txt` per image: `class cx cy w h`,
-  normalized), described by `ml/dataset.yaml`.
-- **Splits:** train / val / test (recommended ~70/20/10).
+- **Source:** public **Waste Detection** dataset (5 classes), used as a
+  YOLOv8 segmentation export (train/valid/test with images + polygon labels).
+- **Annotation format:** YOLO segmentation TXT (one `.txt` per image:
+  `class x1 y1 x2 y2 ...` normalized polygon), described by `ml/dataset.yaml`.
 - **Augmentation:** Ultralytics defaults (mosaic, HSV jitter, flips, scale) to
   improve robustness to lighting, angle, and clutter typical of street imagery.
-- **Class balance:** monitor per-class instance counts; oversample or weight
-  rarer classes (e.g. `Glass`) if AP lags.
+- **Class balance:** imbalanced toward Plastic/Paper; `Glass` is rarest, so its
+  AP is expected to lag (visible in the per-class table in §3).
 
-> Fill in final counts after `make prepare`:
->
-> | Split | Images | Instances |
-> | ----- | ------ | --------- |
-> | train | _TBD_  | _TBD_     |
-> | val   | _TBD_  | _TBD_     |
-> | test  | _TBD_  | _TBD_     |
+| Split | Images | Instances |
+| ----- | ------ | --------- |
+| train | 3,502  | 7,206     |
+| val   | 580    | 740       |
+| test  | 45     | 115       |
+
+Per-class instance totals (all splits): Glass 330 · Metal 826 · Paper 2,320 ·
+Plastic 3,160 · Waste 1,423.
 
 ---
 
 ## 3. Evaluation metrics
 
-Run `make eval` (`ml/evaluate.py`) on the held-out set. Report mAP@0.5,
-mAP@0.5:0.95, precision, recall, F1, and per-class AP.
+Measured with `ml/evaluate.py` on the held-out **test split** (45 images) of
+the Waste Detection dataset, deployed **YOLOv8m-seg** at imgsz 416. Full table
+and plots in [`metrics.md`](metrics.md).
 
-### Overall (template)
+### Overall (deployed YOLOv8m-seg)
 
-| Metric         | YOLOv8s | YOLOv8m |
-| -------------- | ------- | ------- |
-| mAP@0.5        | _TBD_   | _TBD_   |
-| mAP@0.5:0.95   | _TBD_   | _TBD_   |
-| Precision      | _TBD_   | _TBD_   |
-| Recall         | _TBD_   | _TBD_   |
-| F1             | _TBD_   | _TBD_   |
+| Metric        | Value |
+| ------------- | ----- |
+| mAP@0.5       | 0.260 |
+| mAP@0.5:0.95  | 0.215 |
+| Precision     | 0.317 |
+| Recall        | 0.342 |
+| F1            | 0.329 |
 
-### Per-class AP@0.5 (template)
+### Per-class AP@0.5
 
-| Class   | AP@0.5 (s) | AP@0.5 (m) |
-| ------- | ---------- | ---------- |
-| Glass   | _TBD_      | _TBD_      |
-| Metal   | _TBD_      | _TBD_      |
-| Paper   | _TBD_      | _TBD_      |
-| Plastic | _TBD_      | _TBD_      |
-| Waste   | _TBD_      | _TBD_      |
+| Class   | AP@0.5 |
+| ------- | ------ |
+| Glass   | 0.00   |
+| Metal   | 0.446  |
+| Paper   | 0.143  |
+| Plastic | 0.474  |
+| Waste   | 0.239  |
 
 ### Confusion / error analysis (notes)
 
-- Expected confusions: `Plastic` vs `Waste` (overlap in mixed dumping);
-  `Paper` vs background (small objects). Document and discuss after evaluation.
+- This is a **cross-dataset held-out** eval (weights pretrained on a different
+  waste dataset), so absolute mAP understates qualitative performance — the
+  model detects prominent waste strongly in the demos (glass bottle @ 0.87).
+- `Glass` AP is 0.0 here due to label-style mismatch for glass between datasets;
+  strongest classes are `Plastic`/`Metal`. `Paper` (small, thin objects) lags.
+- On-distribution fine-tuning via `ml/train.py` raises these numbers materially.
 
 ---
 
@@ -105,21 +112,26 @@ mAP@0.5:0.95, precision, recall, F1, and per-class AP.
 Measured as model inference time per image (`inference_ms` in `DetectionResult`),
 plus end-to-end including the LLM step.
 
-### Inference latency (template, ms/image)
+### Inference latency (YOLOv8m-seg, imgsz 416, measured on this machine)
 
-| Device                  | YOLOv8s | YOLOv8m |
-| ----------------------- | ------- | ------- |
-| CPU (Apple Silicon M-series) | _TBD_ | _TBD_ |
-| GPU (Google Colab T4)   | _TBD_   | _TBD_   |
+| Device                          | ms/image |
+| ------------------------------- | -------- |
+| Apple Silicon GPU (MPS)         | ~44      |
+| CPU (Apple Silicon)             | ~87      |
 
-### End-to-end (template)
+> Auto-selected via `Detector._pick_device()` (mps > cuda > cpu). Larger imgsz
+> trades latency for small-object recall (e.g. 1280 ≈ 294 ms on MPS).
 
-| Stage                         | Time (ms) |
-| ----------------------------- | --------- |
-| YOLOv8 inference              | _TBD_     |
-| LLM report (Ollama llama3.2:1b)| _TBD_    |
-| Rules + DB persist            | _TBD_     |
-| **Total /detect**             | _TBD_     |
+### End-to-end /detect (MPS, imgsz 416)
+
+| Stage                          | Time      |
+| ------------------------------ | --------- |
+| YOLOv8 inference               | ~44 ms    |
+| Post-process + mask draw       | ~41 ms    |
+| LLM report (Ollama llama3.2:1b)| ~3 s      |
+| Rules + DB persist             | <20 ms    |
+| **Total (LLM path)**           | **~3.2 s** |
+| **Total (`rules` path)**       | **~120 ms** |
 
 > Note: the rules-only fallback path removes the LLM latency entirely, useful for
 > high-throughput batch ingestion.

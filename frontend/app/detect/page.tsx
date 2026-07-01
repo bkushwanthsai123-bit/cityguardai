@@ -1,8 +1,8 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { ImageIcon, Sparkles, CheckCircle2, Cpu } from "lucide-react";
-import { Incident, detect, imageUrl } from "@/lib/api";
+import { ImageIcon, Video, Sparkles, CheckCircle2, Cpu } from "lucide-react";
+import { Incident, detect, detectVideo, imageUrl } from "@/lib/api";
 import { PageHeader, SectionTitle } from "@/components/ui/SectionTitle";
 import { Card } from "@/components/ui/Card";
 import { SeverityBadge } from "@/components/ui/Badge";
@@ -20,9 +20,9 @@ const PIPELINE = [
   {
     n: 1,
     color: "#3b82f6",
-    name: "Image Preprocessing",
+    name: "Image / Video Preprocessing",
     time: "~3ms",
-    desc: "Resize to 640x640, normalize, mosaic augmentation.",
+    desc: "Images resized to imgsz=1280; videos sampled into frames, then normalized.",
   },
   {
     n: 2,
@@ -36,7 +36,7 @@ const PIPELINE = [
     color: "#f97316",
     name: "Non-Max Suppression",
     time: "~2ms",
-    desc: "IoU=0.45 removes duplicate boxes; conf=0.25.",
+    desc: "IoU=0.45 removes duplicate boxes; conf=0.15.",
   },
   {
     n: 4,
@@ -56,17 +56,20 @@ const PIPELINE = [
 
 const MODEL_CARD: { k: string; v: string }[] = [
   { k: "Architecture", v: "YOLOv8m-seg" },
-  { k: "Input", v: "640x640" },
+  { k: "Input", v: "1280 (configurable)" },
   { k: "Classes", v: "5" },
   { k: "Class names", v: "Glass, Metal, Paper, Plastic, Waste" },
   { k: "Params", v: "~11.2M" },
-  { k: "Conf threshold", v: "0.25" },
+  { k: "Conf threshold", v: "0.15" },
   { k: "LLM", v: "Llama 3.2 1B (Ollama)" },
   { k: "mAP@0.5", v: "~0.43 (pretrained; retrain for higher)" },
 ];
 
+type Mode = "image" | "video";
+
 export default function DetectPage() {
   const fileRef = useRef<HTMLInputElement>(null);
+  const [mode, setMode] = useState<Mode>("image");
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [lat, setLat] = useState<string>("");
@@ -87,6 +90,13 @@ export default function DetectPage() {
     }
   }
 
+  function switchMode(m: Mode) {
+    if (m === mode) return;
+    setMode(m);
+    onFile(null);
+    if (fileRef.current) fileRef.current.value = "";
+  }
+
   function onLocation(name: string) {
     const loc = LOCATIONS.find((l) => l.name === name);
     if (loc) {
@@ -102,11 +112,15 @@ export default function DetectPage() {
     setError(null);
     setResult(null);
     try {
-      const inc = await detect(file, {
+      const meta = {
         lat: lat ? Number(lat) : null,
         lon: lon ? Number(lon) : null,
         address: address || null,
-      });
+      };
+      const inc =
+        mode === "video"
+          ? await detectVideo(file, meta)
+          : await detect(file, meta);
       setResult(inc);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Detection failed");
@@ -115,13 +129,17 @@ export default function DetectPage() {
     }
   }
 
-  const resultImg = result ? imageUrl(result.image_path) : null;
+  // Prefer the annotated media (boxes/labels drawn); both .jpg and .gif
+  // render in a plain <img>. Fall back to the raw image for old incidents.
+  const resultImg = result
+    ? imageUrl(result.annotated_path ?? result.image_path)
+    : null;
 
   return (
     <div>
       <PageHeader
         title="Detect Illegal Dumping"
-        subtitle="Upload a street image to run the full YOLOv8 + Llama 3.2 detection pipeline."
+        subtitle="Upload a street image or video to run the full YOLOv8 + Llama 3.2 detection pipeline."
       />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -129,6 +147,32 @@ export default function DetectPage() {
         <div className="space-y-6 lg:col-span-2">
           <Card>
             <SectionTitle title="Detect Illegal Dumping" />
+
+            {/* Mode toggle */}
+            <div className="mb-4 inline-flex rounded-lg border border-[#1e222b] bg-[#0c0e12] p-1">
+              <button
+                type="button"
+                onClick={() => switchMode("image")}
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  mode === "image"
+                    ? "bg-[#1b2130] text-[#e7e9ee]"
+                    : "text-[#8b909c] hover:text-[#e7e9ee]"
+                }`}
+              >
+                <ImageIcon className="h-4 w-4" /> Image
+              </button>
+              <button
+                type="button"
+                onClick={() => switchMode("video")}
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  mode === "video"
+                    ? "bg-[#1b2130] text-[#e7e9ee]"
+                    : "text-[#8b909c] hover:text-[#e7e9ee]"
+                }`}
+              >
+                <Video className="h-4 w-4" /> Video
+              </button>
+            </div>
 
             {/* Dropzone */}
             <button
@@ -138,29 +182,54 @@ export default function DetectPage() {
             >
               {preview ? (
                 <span className="relative block h-44 w-full max-w-sm overflow-hidden rounded-lg border border-[#1e222b]">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={preview}
-                    alt="preview"
-                    className="h-full w-full object-cover"
-                  />
+                  {mode === "video" ? (
+                    <video
+                      src={preview}
+                      className="h-full w-full object-cover"
+                      muted
+                      loop
+                      autoPlay
+                      playsInline
+                    />
+                  ) : (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={preview}
+                      alt="preview"
+                      className="h-full w-full object-cover"
+                    />
+                  )}
                 </span>
               ) : (
                 <span className="flex h-12 w-12 items-center justify-center rounded-full bg-[#15181e] text-[#8b909c]">
-                  <ImageIcon className="h-6 w-6" />
+                  {mode === "video" ? (
+                    <Video className="h-6 w-6" />
+                  ) : (
+                    <ImageIcon className="h-6 w-6" />
+                  )}
                 </span>
               )}
               <span className="mt-3 text-sm font-medium text-[#e7e9ee]">
-                {file ? file.name : "Click to upload image"}
+                {file
+                  ? file.name
+                  : mode === "video"
+                    ? "Click to upload video"
+                    : "Click to upload image"}
               </span>
               <span className="mt-1 text-xs text-[#8b909c]">
-                JPG, PNG, WEBP up to 10MB
+                {mode === "video"
+                  ? "MP4, MOV, WEBM — sampled up to 24 frames"
+                  : "JPG, PNG, WEBP up to 10MB"}
               </span>
             </button>
             <input
               ref={fileRef}
               type="file"
-              accept="image/png,image/jpeg,image/webp"
+              accept={
+                mode === "video"
+                  ? "video/mp4,video/quicktime,video/webm,video/x-matroska"
+                  : "image/png,image/jpeg,image/webp"
+              }
               className="hidden"
               onChange={(e) => onFile(e.target.files?.[0] ?? null)}
             />
@@ -254,12 +323,12 @@ export default function DetectPage() {
               ) : (
                 <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                   {resultImg && (
-                    <div className="overflow-hidden rounded-lg border border-[#1e222b]">
+                    <div className="overflow-hidden rounded-lg border border-[#1e222b] bg-black">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={resultImg}
                         alt={result.title}
-                        className="h-full max-h-72 w-full object-cover"
+                        className="mx-auto max-h-80 w-full object-contain"
                       />
                     </div>
                   )}

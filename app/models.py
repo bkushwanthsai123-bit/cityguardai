@@ -25,6 +25,9 @@ class Incident(Base):
         DateTime, default=_utcnow, nullable=False, index=True
     )
     image_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Media with YOLO boxes/labels drawn on it: annotated .jpg for images,
+    # annotated .mp4 for videos. Nullable for pre-annotation incidents.
+    annotated_path: Mapped[str | None] = mapped_column(String, nullable=True)
 
     detections: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     num_detections: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
